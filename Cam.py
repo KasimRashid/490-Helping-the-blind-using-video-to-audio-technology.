@@ -1,6 +1,5 @@
 import cv2
-# run with 
-# C:\Users\krash\miniconda3\python.exe C:\Users\krash\OneDrive\Desktop\CPSC490\Cam.py
+
 
 stream = cv2.VideoCapture(0)
 
@@ -18,3 +17,4 @@ while(True):
         break
 stream.release()
 cv2.destroyAllwindows() 
+
