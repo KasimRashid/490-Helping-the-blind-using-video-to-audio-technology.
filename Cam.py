@@ -1,6 +1,5 @@
 import cv2
 
-
 stream = cv2.VideoCapture(0)
 
 if not stream.isOpened():
@@ -16,5 +15,4 @@ while(True):
     if cv2.waitKey(1) == ord('q'):
         break
 stream.release()
-cv2.destroyAllwindows() 
-
+cv2.destroyAllwindows()

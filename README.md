@@ -1,1 +1,1 @@
-# 490-Helping-the-blind-using-video-to-audio-technology.
+# 490-Helping-the-visually-disabled-use-video-to-audio-technology
