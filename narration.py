@@ -52,12 +52,5 @@ def speak(text):
 
     print("[AUDIO]:", text)
 
-    command = [
-        "powershell",
-        "-Command",
-        f'Add-Type -AssemblyName System.Speech; '
-        f'$speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; '
-        f'$speak.Speak("{text}")'
-    ]
-
+    command = ["say", text]
     subprocess.Popen(command)
