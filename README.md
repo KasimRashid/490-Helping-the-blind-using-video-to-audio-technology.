@@ -99,6 +99,20 @@ Height: 2 in
 Main role: 
 we can calculate the position of object relative to the distance from the camera
 
+## reading_mode.py
+
+Responsibilities:
+
+- Check camera frames for a large document-like rectangle (paper, menu, flyer)
+- Straighten (perspective-correct) the page when the user presses Scan Document
+- Run OCR (EasyOCR) to extract the text
+- Keep the text in memory only, for later use (get_document_context())
+
+Used by: GUI2.py
+
+Main role:
+Reading Mode (see the Reading Mode section below)
+
 ---
 
 # Current System
@@ -146,11 +160,69 @@ This installs all required libraries for using yolo including:
 - PyTorch
 - NumPy
 
+## 5. Install OCR for Reading Mode (EasyOCR)
+pip install easyocr==1.7.2 --no-deps
+
+Why --no-deps: EasyOCR normally also installs opencv-python-headless, which
+overwrites our normal opencv-python and can break camera windows (cv2.imshow in cam.py).
+The small libraries EasyOCR needs (scikit-image, shapely, pyclipper, python-bidi, ninja)
+are already installed by requirements.txt in step 4.
+
+The first scan downloads the OCR model files (about 100 MB) to ~/.EasyOCR
+in your home folder, NOT into the project folder.
+
+If camera windows ever break because opencv-python-headless got installed anyway:
+pip uninstall -y opencv-python-headless opencv-python
+pip install opencv-python==4.13.0.92
+
 ---
 
 # Running the Program
 
 Program execute by running: python main.py
+
+GUI version (camera + YOLO + narration + Reading Mode): python GUI2.py
+
+---
+
+# Reading Mode (V1)
+
+Reading Mode helps the user read paper documents such as a restaurant menu, a printed page,
+a flyer, or a sign with a lot of text. It runs inside GUI2.py while normal YOLO detection
+keeps working.
+
+How it works:
+
+Camera
+↓
+Every 0.5s OpenCV checks for a large rectangle that looks like a page
+↓
+Page found → green outline, "Scan Document" button turns on,
+narration says "Document detected. Scan available." (once, not repeatedly)
+↓
+User presses Scan Document (scanning is never automatic)
+↓
+One frame is captured, the page is straightened, OCR reads the text
+↓
+The text is read aloud and kept in memory
+↓
+The captured image is thrown away
+
+Storage rules:
+
+- Nothing is saved to disk (no screenshots, no text files)
+- Only one document is kept; a new scan replaces the old one
+- The text expires after 10 minutes, or when the program is closed
+- Future code (for example an LLM answering questions about the menu)
+  can get the text with reading_mode.get_document_context()
+
+Speech: Reading Mode uses the existing narration2.py. Its messages use
+speak(..., priority=True) so the scan result is not skipped by the normal
+2 second object narration cooldown.
+
+Current limits (V1): needs a page with visible edges against a contrasting background,
+English only, OCR runs on the CPU (a few seconds per scan), and long documents are
+read aloud in full.
 
 ---
 

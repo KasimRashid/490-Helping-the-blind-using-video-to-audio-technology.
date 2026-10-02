@@ -33,3 +33,13 @@ typing_extensions==4.15.0
 ultralytics==8.4.19
 ultralytics-thop==2.0.18
 urllib3==2.6.3
+
+# Reading Mode OCR helpers (needed by EasyOCR).
+# EasyOCR itself is NOT listed here: it would also install opencv-python-headless,
+# which overwrites the normal opencv-python and can break cv2.imshow (cam.py).
+# After this file, run:  pip install easyocr==1.7.2 --no-deps   (see README)
+ninja==1.13.2
+pyclipper==1.4.0
+python-bidi==0.6.11
+scikit-image==0.26.0
+shapely==2.1.2

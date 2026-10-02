@@ -14,6 +14,9 @@
 #  - speaks only when the message changes (2s minimum gap)
 #  - stale messages are dropped so narration never lags the camera
 #  - male = default voice, female = female voice (falls back gracefully)
+#  - speak(..., priority=True) is for things the user asked for (Reading Mode).
+#    It skips the repeat/2s-gap check, and routine messages wait until it
+#    has been spoken so they can't replace it or cut in before it.
 
 import os
 import platform
@@ -30,6 +33,7 @@ _lock = threading.Lock()
 _last_message = ""
 _last_speak_time = 0.0
 _worker_started = False
+_priority_pending = False  # True while a priority message is waiting or being spoken
 
 
 def make_sentence(labels):
@@ -109,33 +113,44 @@ def _speak_now(text, rate, voice_index):
 
 
 def _worker():
+    global _priority_pending, _last_speak_time
     while True:
-        text, rate, voice_index = _queue.get()
+        text, rate, voice_index, priority = _queue.get()
         try:
             _speak_now(text, rate, voice_index)
         except Exception as e:
             print(f"[AUDIO ERROR]: {e}")
+        finally:
+            if priority:
+                with _lock:
+                    if _queue.empty():  # no other priority message waiting
+                        _priority_pending = False
+                    _last_speak_time = time.time()  # routine gap starts after it ends
 
 
-def speak(text, rate=160, voice_index=0):
-    """Non-blocking. Queues text only if it is new and the gap has passed."""
-    global _last_message, _last_speak_time, _worker_started
+def speak(text, rate=160, voice_index=0, priority=False):
+    """Non-blocking. Routine text is queued only if it is new and the gap has passed.
+    priority=True always queues (used when the user asked for something)."""
+    global _last_message, _last_speak_time, _worker_started, _priority_pending
 
     now = time.time()
     with _lock:
         if not _worker_started:
             threading.Thread(target=_worker, daemon=True).start()
             _worker_started = True
-        if text == _last_message or now - _last_speak_time < MIN_GAP:
-            return
+        if not priority:
+            if _priority_pending or text == _last_message or now - _last_speak_time < MIN_GAP:
+                return
+        else:
+            _priority_pending = True
         _last_message = text
         _last_speak_time = now
 
-    try:
-        _queue.get_nowait()  # drop any stale pending message
-    except queue.Empty:
-        pass
-    try:
-        _queue.put_nowait((text, rate, voice_index))
-    except queue.Full:
-        pass
+        try:
+            _queue.get_nowait()  # drop any stale pending message
+        except queue.Empty:
+            pass
+        try:
+            _queue.put_nowait((text, rate, voice_index, priority))
+        except queue.Full:
+            pass

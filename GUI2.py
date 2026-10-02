@@ -10,9 +10,12 @@ import time
 from PIL import Image, ImageTk
 from ultralytics import YOLO
 from narration2 import make_sentence, speak
+from reading_mode import find_document, scan_document
 
 # --- THEME & CONFIG ---
 MODEL_PATH, FPS_CAP, FEED_W, FEED_H = "yolo26n.pt", 30, 720, 480
+DOC_CHECK_INTERVAL = 0.5  # seconds between document-in-view checks
+DOC_GONE_TIME = 1.5       # page must be missing this long before it can be announced again
 BG, PANEL_BG, ACCENT, ACCENT_DIM, BORDER, TEXT, TEXT_DIM, DANGER, SUCCESS = \
     "#0d0f14", "#13161e", "#00e5ff", "#00838f", "#1e2230", "#e8eaf0", "#5c6070", "#ff4757", "#2ed573"
 
@@ -33,6 +36,11 @@ class YOLOApp:
         self._latest_raw = None
 
         self.fps_counter, self.fps_display, self.fps_time = 0, 0, time.time()
+
+        # Reading Mode state
+        self.doc_corners, self.doc_check_time = None, 0.0
+        self.scanning, self.scan_message, self.scan_text = False, None, ""
+        self.doc_was_detected, self.doc_last_seen = False, 0.0
 
         self._build_ui()
         threading.Thread(target=self._load_model, daemon=True).start()
@@ -68,6 +76,9 @@ class YOLOApp:
                 speak(message, rate=self.voice_speed, voice_index=self.voice_index)
 
     def _gui_loop(self):
+        if self.scan_message is not None:
+            self._show_scan_result()
+
         if not self.paused:
             ret, frame = self.stream.read()
             if ret:
@@ -75,6 +86,17 @@ class YOLOApp:
                     self._latest_raw = frame.copy()
                     display = self.annotated if self.annotated is not None else frame
                     labels, message = list(self.latest_labels), self.latest_message
+
+                # Reading Mode: look for a page every DOC_CHECK_INTERVAL seconds
+                now = time.time()
+                if now - self.doc_check_time >= DOC_CHECK_INTERVAL:
+                    self.doc_check_time = now
+                    self.doc_corners = find_document(frame)
+                    self._announce_document(now)
+                    self._update_scan_button()
+                if self.doc_corners is not None:
+                    display = display.copy()
+                    cv2.polylines(display, [self.doc_corners.astype(int)], True, (115, 213, 46), 3)
 
                 rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(rgb).resize((FEED_W, FEED_H), Image.LANCZOS)
@@ -173,6 +195,83 @@ class YOLOApp:
         self.f_btn.pack(side="left", expand=True, fill="x", padx=2)
 
         tk.Button(ctrl_sec, text="✕ QUIT", command=self._quit, font=btn_font, bg=DANGER, fg=BG, relief="flat").pack(fill="x", padx=8, pady=1)
+
+        # Reading Mode bar (below the camera feed so the sidebar layout is unchanged)
+        read_row = tk.Frame(self.root, bg=BG)
+        read_row.pack(fill="x", padx=16, pady=(0, 8))
+        tk.Label(read_row, text="▸ READING MODE", font=status_font, fg=ACCENT_DIM, bg=BG).pack(side="left")
+        self.scan_btn = tk.Button(read_row, text="📄 SCAN DOCUMENT", command=self._start_scan, font=btn_font,
+                                  bg=BORDER, fg=BG, disabledforeground=TEXT_DIM, relief="flat", state="disabled")
+        self.scan_btn.pack(side="left", padx=10)
+        self.scan_status_var = tk.StringVar(value="No document in view")
+        tk.Label(read_row, textvariable=self.scan_status_var, font=status_font, fg=TEXT, bg=BG).pack(side="left")
+
+    # ---------------- Reading Mode ----------------
+    def _announce_document(self, now):
+        # Say "Document detected" once when a page appears (not every check).
+        # The page only counts as gone after DOC_GONE_TIME, so a flickering
+        # detection does not repeat the announcement.
+        if self.doc_corners is not None:
+            if not self.doc_was_detected and self.narration_on:
+                speak("Document detected. Scan available.", rate=self.voice_speed,
+                      voice_index=self.voice_index, priority=True)
+            self.doc_was_detected, self.doc_last_seen = True, now
+        elif now - self.doc_last_seen > DOC_GONE_TIME:
+            self.doc_was_detected = False
+
+    def _update_scan_button(self):
+        # Button is only clickable when a page is in view and no scan is running
+        if self.scanning:
+            return
+        if self.doc_corners is not None:
+            self.scan_btn.config(state="normal", bg=SUCCESS)
+            self.scan_status_var.set("Document detected")
+        else:
+            self.scan_btn.config(state="disabled", bg=BORDER)
+            self.scan_status_var.set("No document in view")
+
+    def _start_scan(self):
+        if self.scanning:
+            return  # one scan at a time
+        with self.yolo_lock:
+            frame = None if self._latest_raw is None else self._latest_raw.copy()
+        if frame is None:
+            self.scan_status_var.set("No camera frame available")
+            return
+
+        self.scanning = True
+        self.scan_btn.config(state="disabled", bg=BORDER)
+        self.scan_status_var.set("Scanning...")
+        threading.Thread(target=self._scan_worker, args=(frame,), daemon=True).start()
+
+    def _scan_worker(self, frame):
+        # Runs in the background so the camera keeps moving during OCR.
+        # Only sets self.scan_message; _gui_loop shows it (Tkinter is not thread-safe).
+        text = ""
+        try:
+            text = scan_document(frame)
+            message = "Text captured." if text else "No readable text found."
+        except ImportError:
+            message = "OCR not installed (pip install easyocr)"
+        except Exception as e:
+            print(f"[SCAN ERROR]: {e}")
+            message = "Scan failed."
+        del frame  # captured image is discarded
+        self.scanning = False
+        self.scan_text = text
+        self.scan_message = message  # set last: _gui_loop waits for this
+
+    def _show_scan_result(self):
+        message, self.scan_message = self.scan_message, None
+        self.scan_status_var.set(message)
+        self.doc_check_time = time.time() + 2  # keep the result visible for a moment
+        self.scan_btn.config(state="normal" if self.doc_corners is not None else "disabled",
+                             bg=SUCCESS if self.doc_corners is not None else BORDER)
+        # NARR toggle is the global speech switch. priority=True keeps routine
+        # YOLO narration from skipping the result the user asked for.
+        if self.narration_on:
+            spoken = f"{message} {self.scan_text}" if self.scan_text else message
+            speak(spoken, rate=self.voice_speed, voice_index=self.voice_index, priority=True)
 
     def _update_speed(self, val):
         self.voice_speed = int(val)
