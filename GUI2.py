@@ -10,6 +10,7 @@ import time
 from PIL import Image, ImageTk
 from ultralytics import YOLO
 from narration2 import make_sentence, speak
+from location import describe_locations, make_location_sentence
 
 # --- THEME & CONFIG ---
 MODEL_PATH, FPS_CAP, FEED_W, FEED_H = "yolo26n.pt", 30, 720, 480
@@ -56,7 +57,12 @@ class YOLOApp:
 
             results = self.model(raw, verbose=False)
             labels = [self.model.names[int(box.cls[0])] for box in results[0].boxes]
-            message = make_sentence(labels)
+          
+        ##### Kasim added for Location 
+            height, width = raw.shape[:2]
+            items = describe_locations(results[0], self.model.names, width, height)
+            message = make_location_sentence(items)
+         #####
             annotated = results[0].plot()
 
             with self.yolo_lock:
