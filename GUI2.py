@@ -33,6 +33,10 @@ class YOLOApp:
         self.yolo_lock = threading.Lock()
         self._latest_raw = None
 
+        # Optional experimental depth estimation (depth.py); off by default
+        self.depth, self.depth_on, self.depth_loading = None, False, False
+        self.latest_depth = []
+
         self.fps_counter, self.fps_display, self.fps_time = 0, 0, time.time()
 
         self._build_ui()
@@ -65,8 +69,20 @@ class YOLOApp:
          #####
             annotated = results[0].plot()
 
+            # Depth uses the same frame (raw) and the same YOLO result; any failure just turns depth off
+            depth_lines = []
+            if self.depth_on and self.depth is not None:
+                try:
+                    depth_lines = self.depth.describe(raw, results[0], self.model.names)
+                    if depth_lines != self.latest_depth:
+                        print("[DEPTH]:", " ; ".join(depth_lines) or "none")
+                except Exception as e:
+                    print(f"[DEPTH ERROR]: {e}")
+                    self.depth_on = False
+
             with self.yolo_lock:
                 self.annotated, self.latest_labels, self.latest_message = annotated, labels, message
+                self.latest_depth = depth_lines
 
             # Narration style from GUI.py: heard only when objects are introduced
             # (Terminal printing is removed to follow your instructions)
@@ -74,6 +90,7 @@ class YOLOApp:
                 speak(message, rate=self.voice_speed, voice_index=self.voice_index)
 
     def _gui_loop(self):
+        self._sync_depth_btn()
         if not self.paused:
             ret, frame = self.stream.read()
             if ret:
@@ -81,6 +98,7 @@ class YOLOApp:
                     self._latest_raw = frame.copy()
                     display = self.annotated if self.annotated is not None else frame
                     labels, message = list(self.latest_labels), self.latest_message
+                    depth_lines = list(self.latest_depth)
 
                 rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(rgb).resize((FEED_W, FEED_H), Image.LANCZOS)
@@ -95,7 +113,10 @@ class YOLOApp:
 
                 unique = list(dict.fromkeys(labels))
                 self.narration_var.set(message or "Waiting…")
-                self.objects_var.set("\n".join(f"• {l}" for l in unique) if unique else "—")
+                if depth_lines:  # experimental relative proximity, not a measured distance
+                    self.objects_var.set("\n".join(depth_lines[:6]))
+                else:
+                    self.objects_var.set("\n".join(f"• {l}" for l in unique) if unique else "—")
                 self.count_var.set(f"Objects : {len(labels)} | Unique : {len(unique)}")
 
         self.root.after(max(1, int(1000 / FPS_CAP)), self._gui_loop)
@@ -178,6 +199,9 @@ class YOLOApp:
                                highlightthickness=1, highlightbackground=ACCENT, relief="flat")
         self.f_btn.pack(side="left", expand=True, fill="x", padx=2)
 
+        self.depth_btn = tk.Button(ctrl_sec, text="📏 DEPTH: OFF", command=self._toggle_depth, font=btn_font, bg=BORDER, fg=TEXT, relief="flat")
+        self.depth_btn.pack(fill="x", padx=8, pady=1)
+
         tk.Button(ctrl_sec, text="✕ QUIT", command=self._quit, font=btn_font, bg=DANGER, fg=BG, relief="flat").pack(fill="x", padx=8, pady=1)
 
     def _update_speed(self, val):
@@ -201,6 +225,38 @@ class YOLOApp:
     def _toggle_narration(self):
         self.narration_on = not self.narration_on
         self.narr_btn.config(text="🔊 NARRATION: ON" if self.narration_on else "🔇 NARRATION: OFF", bg=ACCENT_DIM if self.narration_on else BORDER)
+
+    def _toggle_depth(self):
+        if self.depth_on:
+            self.depth_on = False
+            self.latest_depth = []
+            self.depth_btn.config(text="📏 DEPTH: OFF", bg=BORDER)
+            return
+        if self.depth_loading:
+            return
+        if self.depth is not None:
+            self.depth_on = True
+            self.depth_btn.config(text="📏 DEPTH: ON", bg=ACCENT_DIM)
+            return
+        # First enable: load Depth Anything V2 in the background so the camera feed keeps running
+        self.depth_loading = True
+        self.depth_btn.config(text="📏 DEPTH: LOADING…", bg=BORDER)
+        threading.Thread(target=self._load_depth, daemon=True).start()
+
+    def _load_depth(self):
+        try:
+            from depth import DepthEstimator
+            self.depth = DepthEstimator()
+            self.depth_on = True
+        except Exception as e:
+            print(f"[DEPTH] could not load, continuing with YOLO only: {e}")
+        self.depth_loading = False  # button text is refreshed by _gui_loop (Tk stays on the main thread)
+
+    def _sync_depth_btn(self):
+        if self.depth_loading:
+            return
+        on = self.depth_on
+        self.depth_btn.config(text="📏 DEPTH: ON" if on else "📏 DEPTH: OFF", bg=ACCENT_DIM if on else BORDER)
 
     def _quit(self):
         # Proper shutdown sequence to prevent core dump
